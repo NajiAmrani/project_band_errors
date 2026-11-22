@@ -30,6 +30,9 @@ begin
 	using PlutoUI
 	using Plots
 	using ForwardDiff
+
+	#custom
+	include("scripts/cache_heavy_func.jl")
 end
 
 # ╔═╡ 436c0704-0cb9-444b-918f-4d26fc05268a
@@ -303,7 +306,15 @@ In an actual application we would now run `relax_batio3_full` to relax the full 
 """
 
 # ╔═╡ e06f1089-56fe-409d-bd87-beb9895add85
-mingeo = relax_batio3_a(p_experiment; Ecut, kgrid, pseudopotentials, functionals)
+mingeo = run_or_load(
+    relax_batio3_a, 
+    p_experiment; 
+    Ecut = Ecut, 
+    kgrid = kgrid, 
+    pseudopotentials = pseudopotentials, 
+    functionals = functionals,
+    name="example_mingeo"
+)
 
 # ╔═╡ f724b839-2d27-45aa-a251-27462124de7f
 relaxed = batio3_tetragonal(; mingeo.p...)
@@ -564,6 +575,119 @@ md"""
     How do your `Eref` values from this task compare to Task 2.1? Rationalise this outcome.
 """
 
+# ╔═╡ 055d2b4e-6bea-41ee-a9b7-1c5e1eea6587
+params_2_2 = let
+
+	kgrid = (2, 2, 2)
+	
+	Ecut_rough = 30
+	Ecut_converged = 30 		# to be changed
+	
+	#used as a reference to get the actual error
+	Ecut_reference = round(1.25 * Ecut_converged)	
+		
+	# the E_ref arrays are toylored to the E_cut used
+	moltiplicators = [2.0, 2.1, 2.2, 2.3, 2.5, 3.0, 3.5]
+	Eref_array_rough = Ecut_rough .* moltiplicators
+	Eref_array_converged = Ecut_converged .* moltiplicators
+
+	# we assume p to be perfect (should we use the same for all Ecuts?)
+	# this needs to be replaced by the p found after geom minimization
+	# for the converged paramters.
+	p = relaxed 	
+
+	# PBE model
+	pseudopotentials = PseudoFamily("dojo.nc.sr.pbe.v0_4_1.standard.upf")
+	functionals = PBE()
+	
+	model  = model_DFT(p; functionals, pseudopotentials, smearing=Smearing.Gaussian(), temperature=1e-3)
+
+	(; kgrid, Ecut_rough, Ecut_converged, Ecut_reference, Eref_array_rough, Eref_array_converged, model)
+	
+end;
+
+# ╔═╡ 07abf477-595f-4939-8217-3a83cb24c24d
+function compute_reference_solution(basis)
+	scfres_reference =  self_consistent_field(basis; tol=1e-8)
+	return scfres_reference.ρ
+end
+
+# ╔═╡ af9660d4-d88c-4d8c-b7f2-ba4c207d9367
+results2_2 = let
+
+	# compute reference density for actual error calculation
+	basis_reference = PlaneWaveBasis(params_2_2.model; kgrid=params_2_2.kgrid, Ecut=params_2_2.Ecut_reference)
+	ρ_reference = run_or_load(compute_reference_solution, basis_reference;
+								name="ref_for_actual_density_error")
+
+	#*** not sure this is needed
+	#refinement_reference = refine_scfres(round_occupation(scfres_reference), basis_reference)
+	#est_err_reference = norm_l2(basis_reference, refinement_reference.δρ)
+	#***
+	
+	# rough solution
+	basis_rough = PlaneWaveBasis(params_2_2.model; kgrid=params_2_2.kgrid, Ecut=params_2_2.Ecut_rough)
+	scfres_rough = self_consistent_field(basis_rough; tol=1e-8)
+
+	# converged solution
+	basis_converged = PlaneWaveBasis(params_2_2.model; kgrid=params_2_2.kgrid, Ecut=params_2_2.Ecut_converged)
+	scfres_converged = self_consistent_field(basis_converged; tol=1e-8)
+
+
+	#the actual error doesn't depend on Eref, only on E_reference
+	# actual rough error
+	ρ_rough_in_reference_basis = DFTK.transfer_density(scfres_rough.ρ, basis_rough, basis_reference)
+	act_err_rough = norm_l2(basis_reference, ρ_rough_in_reference_basis - ρ_reference)
+	# actual converged error
+	ρ_converged_in_reference_basis = DFTK.transfer_density(scfres_converged.ρ, basis_converged, basis_reference)
+	act_err_converged = norm_l2(basis_reference, ρ_converged_in_reference_basis - ρ_reference)
+	
+	est_err_rough=Float64[]
+	est_err_converged=Float64[]
+
+	print("everything before done\n")
+
+	for E_ref in params_2_2.Eref_array_rough
+	    basis_ref=PlaneWaveBasis(params_2_2.model; kgrid=params_2_2.kgrid, Ecut=E_ref)
+	    refinement_rough = refine_scfres(round_occupation(scfres_rough), basis_ref)
+	    push!(est_err_rough, norm_l2(basis_ref, refinement_rough.δρ))
+	end
+
+	for E_ref in params_2_2.Eref_array_converged
+	    basis_ref=PlaneWaveBasis(params_2_2.model; kgrid=params_2_2.kgrid, Ecut=E_ref)
+	    refinement_converged = refine_scfres(round_occupation(scfres_converged), basis_ref)
+	    push!(est_err_converged, norm_l2(basis_ref, refinement_converged.δρ))
+	end
+
+	(;est_err_rough, est_err_converged, act_err_rough, act_err_converged)
+end
+
+# ╔═╡ 98069eca-c0cc-4a3c-b000-e7e6854790f2
+let
+	p1 = plot( 
+	    params_2_2.Eref_array_rough,
+	    results2_2.est_err_rough;
+	    yscale = :log10,
+	    marker = :circle,
+	    xlabel = "E_ref",
+	    ylabel = "Estimated error",
+	    label = "rough",
+	    title = "Estimated error vs E_ref"
+	)
+	
+	plot!(
+	    p1,
+	    params_2_2.Eref_array_converged,
+	    results2_2.est_err_converged;
+	    yscale = :log10,
+	    marker = :square,
+	    label = "converged"
+	)
+
+	hline!(p1, [results2_2.act_err_converged], yscale = :log10, label = "actual error fro converged", linestyle = :dash, linewidth = 2)
+	hline!(p1, [results2_2.act_err_rough], label = "actual error fro rough", linestyle = :dash, linewidth = 2)
+end
+
 # ╔═╡ 4ed1f9ed-d404-4a1c-8613-652d1cdf9af5
 md"""
 With such a $\delta \rho$ at hand we are able to compute a new Hamiltonian $\mathcal{H}_k(\rho_\text{ref}) = \mathcal{H}_k(\rho + \delta\rho)$,
@@ -603,6 +727,9 @@ md"""
 
 	You should overall find that band structure errors are small when you use the converged cutoff. What is the situation for the reduced cutoff ? How does this estimate perform ?
 """
+
+# ╔═╡ e221fb8e-dcf0-405a-9723-ce1ff95a8306
+
 
 # ╔═╡ aa80aa2c-f97f-4a9c-b294-c4698e8fb1eb
 md"""
@@ -1060,11 +1187,16 @@ md"""
 # ╠═1b6bc6c4-d62d-4f81-bbb5-948d6be1bd39
 # ╠═c2942550-427f-4c71-af72-f468d7d4bb26
 # ╟─eba3e75e-ba36-4d26-9399-07f681e6e4d1
+# ╠═055d2b4e-6bea-41ee-a9b7-1c5e1eea6587
+# ╠═07abf477-595f-4939-8217-3a83cb24c24d
+# ╠═af9660d4-d88c-4d8c-b7f2-ba4c207d9367
+# ╠═98069eca-c0cc-4a3c-b000-e7e6854790f2
 # ╟─4ed1f9ed-d404-4a1c-8613-652d1cdf9af5
 # ╟─8ec195ed-3d64-4260-bfd3-94b6c985db7d
 # ╠═2d2375bd-7575-48b9-86ba-6960c0954915
 # ╟─6ff5fa3c-136c-4f6b-a56c-29dea1b09262
 # ╟─0cf5d9e3-e13e-4e4b-8660-14d4c7670fdc
+# ╠═e221fb8e-dcf0-405a-9723-ce1ff95a8306
 # ╟─aa80aa2c-f97f-4a9c-b294-c4698e8fb1eb
 # ╟─b0b544c6-9538-4608-a322-f11fe5175c7d
 # ╠═4c96c0c3-7e5f-45fa-87d4-d2d09a8473ed
