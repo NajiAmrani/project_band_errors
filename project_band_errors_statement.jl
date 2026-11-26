@@ -481,6 +481,8 @@ let
 	hamr = Hamiltonian(basis_ref; ρ=ρ_ref)
 	hamψ_Γ = hamr[1] * ψ_ref[1]
 
+	size(ψ_ref[1])
+
 	# Also note that there is scfres.eigenvalues[1]
 end
 
@@ -667,7 +669,7 @@ let
 	p1 = plot( 
 	    params_2_2.Eref_array_rough,
 	    results2_2.est_err_rough;
-	    yscale = :log10,
+	    #yscale = :log10,
 	    marker = :circle,
 	    xlabel = "E_ref",
 	    ylabel = "Estimated error",
@@ -679,12 +681,12 @@ let
 	    p1,
 	    params_2_2.Eref_array_converged,
 	    results2_2.est_err_converged;
-	    yscale = :log10,
+	    #yscale = :log10,
 	    marker = :square,
 	    label = "converged"
 	)
 
-	hline!(p1, [results2_2.act_err_converged], yscale = :log10, label = "actual error fro converged", linestyle = :dash, linewidth = 2)
+	hline!(p1, [results2_2.act_err_converged], label = "actual error fro converged", linestyle = :dash, linewidth = 2)
 	hline!(p1, [results2_2.act_err_rough], label = "actual error fro rough", linestyle = :dash, linewidth = 2)
 end
 
@@ -710,7 +712,10 @@ As part of the computation of $\delta\rho$ the `refine_scfres` already executes 
 """
 
 # ╔═╡ 2d2375bd-7575-48b9-86ba-6960c0954915
-propertynames(scfres_ref)
+#propertynames(scfres_ref)
+size([dot(x, y) for (x, y) in zip(scfres_ref.ψ[1], scfres_ref.ψ[1])])
+#propertynames(scfres)
+
 
 # ╔═╡ 6ff5fa3c-136c-4f6b-a56c-29dea1b09262
 md"""
@@ -729,7 +734,52 @@ md"""
 """
 
 # ╔═╡ e221fb8e-dcf0-405a-9723-ce1ff95a8306
+result_2_3 = let
 
+	# rough solution
+	basis_rough = PlaneWaveBasis(params_2_2.model; kgrid=params_2_2.kgrid, Ecut=params_2_2.Ecut_rough)
+	scfres_rough = self_consistent_field(basis_rough; tol=1e-8)
+
+	# converged solution
+	basis_converged = PlaneWaveBasis(params_2_2.model; kgrid=params_2_2.kgrid, Ecut=params_2_2.Ecut_converged)
+	scfres_converged = self_consistent_field(basis_converged; tol=1e-8)
+
+	error = Float64[]
+
+	for E_ref in params_2_2.Eref_array_rough
+		
+	    basis_ref=PlaneWaveBasis(params_2_2.model; kgrid=params_2_2.kgrid, Ecut=E_ref)
+	    refinement_rough = refine_scfres(round_occupation(scfres_rough), basis_ref)
+
+		ρ_ref = refinement_rough.ρ + refinement_rough.δρ
+		
+		# Build the new hamiltonian
+		ham_refin = Hamiltonian(basis_ref; ρ=ρ_ref)
+		# ψ_ref is of zise (n_G, n_bands)
+		ψΓ_ref = refinement_rough.ψ[1]
+		hamψ_Γ = ham_refin[1] * ψΓ_ref
+		# we take the real part, hamiltonian is hermetian but because of floating-point artithmetic there can be a very small imaginary part, which we can just remove
+		δϵ = [real(dot(ψΓ_ref[:, n], hamψ_Γ[:, n])) for n in axes(ψΓ_ref, 2)] 
+		
+	    push!(error, δϵ[1])
+	end
+	
+	error
+end
+
+# ╔═╡ 8293b54b-d119-4fba-a337-b69efadf0ea6
+let
+	p1 = plot( 
+	    params_2_2.Eref_array_rough,
+	    result_2_3;
+	    #yscale = :log10,
+	    marker = :circle,
+	    xlabel = "E_ref",
+	    ylabel = "Estimated error",
+	    label = "rough",
+	    title = "Estimated error vs E_ref"
+	)
+end
 
 # ╔═╡ aa80aa2c-f97f-4a9c-b294-c4698e8fb1eb
 md"""
@@ -1197,6 +1247,7 @@ md"""
 # ╟─6ff5fa3c-136c-4f6b-a56c-29dea1b09262
 # ╟─0cf5d9e3-e13e-4e4b-8660-14d4c7670fdc
 # ╠═e221fb8e-dcf0-405a-9723-ce1ff95a8306
+# ╠═8293b54b-d119-4fba-a337-b69efadf0ea6
 # ╟─aa80aa2c-f97f-4a9c-b294-c4698e8fb1eb
 # ╟─b0b544c6-9538-4608-a322-f11fe5175c7d
 # ╠═4c96c0c3-7e5f-45fa-87d4-d2d09a8473ed
